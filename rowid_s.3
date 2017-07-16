@@ -1,0 +1,64 @@
+.TH ROWID_S 3
+.SH NAME
+i_rowid_s, m_rowid_s, r_rowid_s, s_rowid_s, w_rowid_s \- rowid operations
+.SH SYNOPSIS
+.B int i_rowid_s()
+
+.B void m_rowid_s(n1, n2)
+.br
+.B int n1, n2;
+
+.B int r_rowid_s(n)
+.br
+.B int n;
+
+.B int s_rowid_s(n)
+.br
+.B int n;
+
+.B void w_rowid_s(n1, n2)
+.br
+.B int n1, n2;
+.SH DESCRIPTION
+The arguments
+.B n, n1
+and
+.B n2
+are integers.
+
+.br
+.I i_rowid_s
+initializes the internal memory array.  Upon successful completion,
+0 is returned.  Otherwise, a value of 1 is returned to indicate an error.
+
+.br
+.I m_rowid_s
+moves (shuffles) elements of the internal memory array down, working
+between elements
+.B n1
+and
+.B n2\-1
+inclusive.
+
+.br
+.I r_rowid_s
+reads the
+.B n
+element of the internal memory array.  It returns the rowid read.
+
+.br
+.I s_rowid_s
+changes the size of the internal memory array to
+.B n
+bytes.  Upon successful completion, 0 is returned.  Otherwise, a
+value of 1 is returned to indicate an error.
+
+.br
+.I w_rowid_s
+writes
+.B n2
+to the
+.B n1
+element of the internal memory array.
+.SH SUPPORT
+Send bug reports to Dave Snyder <dave@snide.com>

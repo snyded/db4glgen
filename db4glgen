@@ -1,0 +1,2235 @@
+#!/bin/sh
+
+#   @(#) db4glgen 4.03  06/12/2003 10:24:28
+#
+#   db4glgen - generates 4gl code for a basic data-entry screen
+#   Copyright (C) 1989-2003  David A. Snyder
+#
+#   This program is free software; you can redistribute it and/or modify
+#   it under the terms of the GNU General Public License as published by
+#   the Free Software Foundation; version 2 of the License.
+#
+#   This program is distributed in the hope that it will be useful,
+#   but WITHOUT ANY WARRANTY; without even the implied warranty of
+#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#   GNU General Public License for more details.
+#
+#   You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+#   Although "db4glgen" must be used under the terms of the GNU General
+#   Public License, the output of "db4glgen" is exempt from the terms of
+#   the GNU General Public License.  I claim no copyright nor exclusive
+#   rights to that generated output.
+
+
+usage() {
+    echo "usage: `basename $0` -d dbname -t tabname [-b COL1 -b COL2] [-cflo] program" >&2
+    exit 1
+}
+
+(echo "DB4GLGEN version 4.03, Copyright (C) 1989-2003 David A. Snyder"; echo) >&2
+
+
+set -- `getopt cd:b:flot: $* 2>/dev/null`
+if [ $? != 0 ]
+then
+        usage
+fi
+for i in $*
+do
+        case $i in
+        -d)
+                DBNAME=$2
+                shift 2
+                ;;
+        -t)
+                TABNAME=$2
+                shift 2
+                ;;
+        -b)
+                BRWNAME="$BRWNAME $2"
+                shift 2
+                ;;
+        -c)
+                CFLG=$1
+                shift
+                ;;
+        -f)
+                FFLG=$1
+                shift
+                ;;
+        -l)
+                LFLG=$1
+                shift
+                ;;
+        -o)
+                OFLG=$1
+                shift
+                ;;
+        --)
+                shift
+                break
+                ;;
+        esac
+done
+PRGNAME=$1
+
+test -z "$DBNAME" && usage
+test -z "$TABNAME" && usage
+test -z "$PRGNAME" && usage
+if [ -n "$BRWNAME" ]
+then
+	set `echo "$BRWNAME"`
+	test $# -ne 2 && usage
+	BROWSE1=$1
+	BROWSE2=$2
+fi
+
+set -- `dbaccess $DBNAME - <<! 2>/dev/null
+select tabname from systables where tabname = "$TABNAME";
+!`
+if [ $? = 255 ]
+then
+        echo "Database not found or no system permission." >&2
+        exit 1
+fi
+if [ "$2" != "$TABNAME" ]
+then
+        echo "Table $TABNAME not found." >&2
+        exit 1
+fi
+
+
+FGL=${PRGNAME}.4gl
+FGE=${PRGNAME}.4ge
+FGO=${PRGNAME}.4go
+FGI=${PRGNAME}.4gi
+PER=${PRGNAME}.per
+BPER=${PRGNAME}b.per
+FRM=${PRGNAME}.frm
+BFRM=${PRGNAME}b.frm
+HLP=${PRGNAME}.hlp
+MSG=${PRGNAME}.msg
+C=${PRGNAME}.c
+EC=${PRGNAME}.ec
+O=${PRGNAME}.o
+TMP=${PRGNAME}.tmp
+SER=${PRGNAME}.ser
+NUM=999
+
+test -f "$FGL" && FGLEXISTS="yes"
+test -f "$HLP" && HLPEXISTS="yes"
+
+echo "*** Step 1:  Building default 4gl source ..."
+
+dbaccess $DBNAME - <<!! >/dev/null 2>&1
+output to "$TMP" without headings
+select colname from syscolumns, systables
+where syscolumns.tabid = systables.tabid and systables.tabname = "$TABNAME"
+!!
+
+LAST_COLNAME=`tail -1 $TMP`
+
+if test -n "$FGLEXISTS" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'$FGL'"
+else
+cat <<!! >$FGL
+# $FGL
+# Created by: db4glgen, v4.03 06/12/2003 10:24:28
+
+
+DATABASE $DBNAME
+
+
+DEFINE  w_record RECORD LIKE $TABNAME.*          # working record
+DEFINE  s_record RECORD LIKE $TABNAME.*          # saving record
+DEFINE  n_record RECORD LIKE $TABNAME.*          # null record
+DEFINE  q_cnt INTEGER                            # current size of list
+DEFINE  q_cur INTEGER                            # index position in list
+DEFINE  q_off CHAR(10)                           # offset to jump 'n' rows
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+DEFINE  brw_scrline SMALLINT                         # line number in browse
+!!
+fi
+cat <<!! >>$FGL
+
+
+{*******************************************************************************
+* This program drives the $TABNAME screen.
+*******************************************************************************}
+
+MAIN
+    DEFER INTERRUPT
+    CALL menu_$TABNAME()
+    CLEAR SCREEN
+END MAIN
+
+
+{*******************************************************************************
+* This function handles the main ring menu.                                    *
+*******************************************************************************}
+
+FUNCTION menu_$TABNAME()
+    DEFINE  cur_choice CHAR(8)
+
+    CALL init_$TABNAME()
+
+    OPEN FORM $PRGNAME FROM "$PRGNAME"
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    DISPLAY FORM $PRGNAME ATTRIBUTE(BLUE)" >>$FGL
+else
+echo "    DISPLAY FORM $PRGNAME" >>$FGL
+fi
+cat <<!! >>$FGL
+
+    LET cur_choice = "Query"
+    MENU "OPTIONS"
+        COMMAND "Query" "Searches the active database table." HELP 1
+            LET cur_choice = "Query"
+            CALL qry_$TABNAME()
+            CALL disp_$TABNAME()
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+        COMMAND "Browse" "Browse through rows in the Current List." HELP 1
+            LET cur_choice = "Browse"
+            IF repo_$TABNAME("C", "B") THEN
+                CALL brw_$TABNAME()
+                CALL disp_$TABNAME()
+            END IF
+!!
+fi
+cat <<!! >>$FGL
+        COMMAND "Next" "Shows the next row in the Current List." HELP 1
+            LET cur_choice = "Next"
+            IF repo_$TABNAME("N", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "Previous" "Shows the previous row in the Current List." HELP 1
+            LET cur_choice = "Previous"
+            IF repo_$TABNAME("P", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "First" "Shows the first row in the Current List." HELP 1
+            LET cur_choice = "First"
+            IF repo_$TABNAME("F", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "Last" "Shows the last row in the Current List." HELP 1
+            LET cur_choice = "Last"
+            IF repo_$TABNAME("L", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "Add" "Adds a row to the active database table." HELP 1
+            LET cur_choice = "Add"
+            CALL add_$TABNAME()
+            CALL disp_$TABNAME()
+        COMMAND "Update" "Changes a row in the active database table." HELP 1
+            LET cur_choice = "Update"
+            IF repo_$TABNAME("C", "U") THEN
+                CALL upd_$TABNAME()
+            END IF
+            CALL disp_$TABNAME()
+        COMMAND "Remove" "Deletes a row in the active database table." HELP 1
+            LET cur_choice = "Remove"
+            IF repo_$TABNAME("C", "U") THEN
+                CALL del_$TABNAME()
+            END IF
+            CALL disp_$TABNAME()
+        COMMAND "Current" "Displays the current row of the current table." HELP 1
+            LET cur_choice = "Current"
+            IF repo_$TABNAME("C", "S") THEN
+                CALL disp_$TABNAME()
+            END IF
+        COMMAND "Output" "Output selected rows in report format." HELP 1
+            LET cur_choice = "Output"
+            IF repo_$TABNAME("C", "S") THEN
+                CALL out_$TABNAME()
+            END IF
+        COMMAND "Exit" "Returns to the INFORMIX-SQL menu." HELP 1
+            LET cur_choice = "Exit"
+            EXIT MENU
+        COMMAND KEY (CONTROL-G)
+            CALL fgl_prtscr()
+            NEXT OPTION cur_choice
+        COMMAND KEY ("0")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "0"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("1")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "1"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("2")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "2"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("3")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "3"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("4")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "4"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("5")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "5"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("6")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "6"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("7")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "7"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("8")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "8"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("9")
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off CLIPPED, "9"
+            WHENEVER ERROR STOP
+            NEXT OPTION cur_choice
+        COMMAND KEY ("!")
+            CALL bang()
+            NEXT OPTION cur_choice
+    END MENU
+    CLOSE FORM $PRGNAME
+END FUNCTION
+
+
+{*******************************************************************************
+* This function initializes options and variables.                             *
+*******************************************************************************}
+
+FUNCTION init_$TABNAME()
+!!
+if [ "$LFLG" = "-l" -a "$OFLG" = "-o" ]
+then
+cat <<!! >>$FGL
+    SET ISOLATION TO DIRTY READ
+
+!!
+fi
+cat <<!! >>$FGL
+    OPTIONS HELP FILE "$MSG"
+    OPTIONS INPUT WRAP
+    OPTIONS MESSAGE LINE LAST
+    OPTIONS PROMPT LINE LAST
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    OPTIONS DISPLAY ATTRIBUTE(RED)" >>$FGL
+fi
+cat <<!! >>$FGL
+
+    INITIALIZE n_record.* TO NULL
+    LET w_record.* = n_record.*   # Faster than INITIALIZE
+
+    IF i_rowid_s() THEN
+        ERROR " Memory allocation error, out of memory  "
+        EXIT PROGRAM
+    END IF
+
+    LET q_cnt = 0
+    LET q_cur = 0
+    LET q_off = "0"
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+    PREPARE brw_stmt FROM
+      "SELECT $BROWSE1, $BROWSE2 FROM $TABNAME WHERE ROWID = ?"
+    DECLARE brw_curs CURSOR FOR brw_stmt
+
+!!
+fi
+cat <<!! >>$FGL
+    PREPARE std_stmt FROM
+      "SELECT * FROM $TABNAME WHERE ROWID = ?"
+    DECLARE std_curs CURSOR FOR std_stmt
+
+    PREPARE upd_stmt FROM
+      "SELECT * FROM $TABNAME WHERE ROWID = ? FOR UPDATE"
+    DECLARE upd_curs CURSOR FOR upd_stmt
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will query the database table.                                 *
+*******************************************************************************}
+
+FUNCTION qry_$TABNAME()
+    DEFINE  q_txt CHAR(512)
+    DEFINE  the_rowid INTEGER
+    DEFINE  retval SMALLINT
+
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    DISPLAY \"QUERY:  ESCAPE queries.  INTERRUPT discards query.  ARROW keys move cursor.\", \"\" AT 1,1 ATTRIBUTE(WHITE)" >>$FGL
+echo "    DISPLAY \"Searches the active database table.\", \"\" AT 2,1 ATTRIBUTE(WHITE)" >>$FGL
+else
+echo "    DISPLAY \"QUERY:  ESCAPE queries.  INTERRUPT discards query.  ARROW keys move cursor.\", \"\" AT 1,1" >>$FGL
+echo "    DISPLAY \"Searches the active database table.\", \"\" AT 2,1" >>$FGL
+fi
+cat <<!! >>$FGL
+    MESSAGE ""
+
+    LET s_record.* = w_record.*
+
+    CLEAR FORM
+    LET int_flag = FALSE
+    CONSTRUCT BY NAME q_txt ON
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      $TABNAME.$COLNAME," >>$FGL
+        else
+            echo "      $TABNAME.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     HELP 2
+        ON KEY (CONTROL-B)
+            NEXT FIELD PREVIOUS
+        ON KEY (CONTROL-F)
+            NEXT FIELD NEXT
+        ON KEY (CONTROL-G)
+            CALL fgl_prtscr()
+        ON KEY (CONTROL-P)
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+    END CONSTRUCT
+
+    IF int_flag THEN
+        RETURN
+    END IF
+
+    LET q_txt = "SELECT $TABNAME.rowid FROM $TABNAME WHERE ", q_txt CLIPPED
+
+    WHENEVER ERROR CONTINUE
+    OPTIONS SQL INTERRUPT ON
+    MESSAGE "Searching ..."
+
+    PREPARE q_sid FROM q_txt
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+        OPTIONS SQL INTERRUPT OFF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    DECLARE q_curs CURSOR FOR q_sid
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+        OPTIONS SQL INTERRUPT OFF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    LET q_cnt = 0
+    FOREACH q_curs INTO the_rowid
+        IF s_rowid_s(q_cnt + 1) THEN
+            ERROR " Memory allocation error, out of memory  "
+            OPTIONS SQL INTERRUPT OFF
+            WHENEVER ERROR STOP
+            RETURN
+        END IF
+        LET q_cnt = q_cnt + 1
+        CALL w_rowid_s(q_cnt, the_rowid)
+
+        IF int_flag THEN
+            EXIT FOREACH
+        END IF
+    END FOREACH
+
+    OPTIONS SQL INTERRUPT OFF
+    WHENEVER ERROR STOP
+
+    MESSAGE ""
+    IF int_flag THEN
+        ERROR " Statement interrupted by user  "
+        SLEEP 1
+    END IF
+
+    IF q_cnt > 0 THEN
+        LET q_cur = 1
+        LET retval = repo_$TABNAME("C", "S")
+    ELSE
+        LET q_cur = 0
+        LET w_record.* = n_record.*   # Faster than INITIALIZE
+        ERROR " There are no rows satisfying the conditions  "
+    END IF
+END FUNCTION
+
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function browses through the current list.                              *
+*******************************************************************************}
+
+FUNCTION brw_$TABNAME()
+    DEFINE  s_cur INTEGER                            # saving index position
+    DEFINE  keyhit INTEGER
+    DEFINE  retval SMALLINT
+
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    DISPLAY \"BROWSE:  ESCAPE selects data.  INTERRUPT aborts.  ARROW keys move cursor.\", \"\" AT 1,1 ATTRIBUTE(WHITE)" >>$FGL
+echo "    DISPLAY \"Browse through rows in the Current List.\", \"\" AT 2,1 ATTRIBUTE(WHITE)" >>$FGL
+else
+echo "    DISPLAY \"BROWSE:  ESCAPE selects data.  INTERRUPT aborts.  ARROW keys move cursor.\", \"\" AT 1,1" >>$FGL
+echo "    DISPLAY \"Browse through rows in the Current List.\", \"\" AT 2,1" >>$FGL
+fi
+cat <<!! >>$FGL
+
+    OPEN WINDOW browse AT 4,10 WITH FORM "${PRGNAME}b"
+      ATTRIBUTES(BORDER, FORM LINE FIRST + 1)
+
+    LET s_cur = q_cur
+    CALL brw_dsppage_$TABNAME()
+
+    OPTIONS HELP KEY CONTROL-Q
+    WHILE (TRUE)
+        LET keyhit = fgl_getkey()
+        CASE
+            WHEN keyhit = fgl_keyval("ACCEPT")
+                EXIT WHILE
+            WHEN keyhit = fgl_keyval("INTERRUPT")
+                LET q_cur = s_cur
+                EXIT WHILE
+            WHEN keyhit = fgl_keyval("DOWN") OR keyhit = fgl_keyval("RIGHT")
+                CALL brw_down_$TABNAME()
+            WHEN keyhit = fgl_keyval("UP") OR keyhit = fgl_keyval("LEFT")
+                CALL brw_up_$TABNAME()
+            WHEN keyhit = fgl_keyval("F3")     # NEXT KEY
+                CALL brw_nextpage_$TABNAME()
+            WHEN keyhit = fgl_keyval("F4")     # PREVIOUS KEY
+                CALL brw_prevpage_$TABNAME()
+            WHEN keyhit = fgl_keyval("CONTROL-G")
+                CALL fgl_prtscr()
+            WHEN keyhit = fgl_keyval("0") OR
+                 keyhit = fgl_keyval("1") OR
+                 keyhit = fgl_keyval("2") OR
+                 keyhit = fgl_keyval("3") OR
+                 keyhit = fgl_keyval("4") OR
+                 keyhit = fgl_keyval("5") OR
+                 keyhit = fgl_keyval("6") OR
+                 keyhit = fgl_keyval("7") OR
+                 keyhit = fgl_keyval("8") OR
+                 keyhit = fgl_keyval("9")
+                WHENEVER ERROR CONTINUE
+                LET q_off = q_off CLIPPED, ASCII keyhit
+                WHENEVER ERROR STOP
+            OTHERWISE
+                ERROR ""
+                LET q_off = "0"
+        END CASE
+    END WHILE
+    OPTIONS HELP KEY CONTROL-W
+
+    LET retval = repo_$TABNAME("C", "S")
+
+    CLOSE WINDOW browse
+END FUNCTION
+
+
+!!
+fi
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function adds a row to the database table.                              *
+*******************************************************************************}
+
+FUNCTION add_$TABNAME()
+    DEFINE  the_rowid INTEGER
+
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    DISPLAY \"ADD:  ESCAPE adds new data.  INTERRUPT discards it.  ARROW keys move cursor.\", \"\" AT 1,1 ATTRIBUTE(WHITE)" >>$FGL
+echo "    DISPLAY \"Adds new data to the active database table.\", \"\" AT 2,1 ATTRIBUTE(WHITE)" >>$FGL
+else
+echo "    DISPLAY \"ADD:  ESCAPE adds new data.  INTERRUPT discards it.  ARROW keys move cursor.\", \"\" AT 1,1" >>$FGL
+echo "    DISPLAY \"Adds new data to the active database table.\", \"\" AT 2,1" >>$FGL
+fi
+cat <<!! >>$FGL
+    MESSAGE ""
+
+    DISPLAY "" TO q_cur
+    DISPLAY "" TO q_cnt
+
+    LET s_record.* = w_record.*
+    LET w_record.* = n_record.*   # Faster than INITIALIZE
+
+    LET int_flag = FALSE
+    OPTIONS HELP KEY CONTROL-E
+    INPUT BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      w_record.$COLNAME," >>$FGL
+        else
+            echo "      w_record.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     HELP 2
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        BEFORE FIELD $COLNAME" >>$FGL
+        echo "            CALL reverse_on_$TABNAME()" >>$FGL
+        echo "        AFTER FIELD $COLNAME" >>$FGL
+        echo "            CALL reverse_off_$TABNAME()" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+        ON KEY (CONTROL-B)
+            CALL reverse_off_$TABNAME()
+            NEXT FIELD PREVIOUS
+        ON KEY (CONTROL-F)
+            CALL reverse_off_$TABNAME()
+            NEXT FIELD NEXT
+        ON KEY (CONTROL-G)
+            CALL fgl_prtscr()
+        ON KEY (CONTROL-P)
+            CALL reverse_off_$TABNAME()
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+        ON KEY (CONTROL-W)
+            CALL help_$TABNAME()
+        ON KEY (INTERRUPT)
+            EXIT INPUT
+    END INPUT
+    OPTIONS HELP KEY CONTROL-W
+
+    IF int_flag THEN
+        LET w_record.* = s_record.*
+        RETURN
+    END IF
+
+    WHENEVER ERROR CONTINUE
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+    BEGIN WORK
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+fi
+cat <<!! >>$FGL
+    LET w_record.Qsername = 0
+    INSERT INTO $TABNAME VALUES (w_record.*)
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+    LET w_record.Qsername = sqlca.sqlerrd[2]
+    LET the_rowid = sqlca.sqlerrd[6]
+
+    DISPLAY BY NAME w_record.Qsername
+
+    IF s_rowid_s(q_cnt + 1) THEN
+        ERROR " Memory allocation error, out of memory  "
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+    LET q_cnt = q_cnt + 1
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+    COMMIT WORK
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+fi
+cat <<!! >>$FGL
+    WHENEVER ERROR STOP
+
+    LET q_cur = q_cnt
+    CALL w_rowid_s(q_cur, the_rowid)
+
+    MESSAGE "Row added"
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will update the current row.                                   *
+*******************************************************************************}
+
+FUNCTION upd_$TABNAME()
+!!
+if [ "$CFLG" = "-c" ]
+then
+echo "    DISPLAY \"UPDATE:  ESCAPE changes data.  INTERRUPT discards changes.  ARROW keys move.\", \"\" AT 1,1 ATTRIBUTE(WHITE)" >>$FGL
+echo "    DISPLAY \"Changes this row in the active database table.\", \"\" AT 2,1 ATTRIBUTE(WHITE)" >>$FGL
+else
+echo "    DISPLAY \"UPDATE:  ESCAPE changes data.  INTERRUPT discards changes.  ARROW keys move.\", \"\" AT 1,1" >>$FGL
+echo "    DISPLAY \"Changes this row in the active database table.\", \"\" AT 2,1" >>$FGL
+fi
+cat <<!! >>$FGL
+    MESSAGE ""
+
+    LET s_record.* = w_record.*
+
+    LET int_flag = FALSE
+    OPTIONS HELP KEY CONTROL-E
+    INPUT BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        if [ _$COLNAME != _$LAST_COLNAME ]
+        then
+            echo "      w_record.$COLNAME," >>$FGL
+        else
+            echo "      w_record.$COLNAME" >>$FGL
+        fi
+    fi
+done
+cat <<!! >>$FGL
+     WITHOUT DEFAULTS HELP 2
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        BEFORE FIELD $COLNAME" >>$FGL
+        echo "            CALL reverse_on_$TABNAME()" >>$FGL
+        echo "        AFTER FIELD $COLNAME" >>$FGL
+        echo "            CALL reverse_off_$TABNAME()" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+        ON KEY (CONTROL-B)
+            CALL reverse_off_$TABNAME()
+            NEXT FIELD PREVIOUS
+        ON KEY (CONTROL-F)
+            CALL reverse_off_$TABNAME()
+            NEXT FIELD NEXT
+        ON KEY (CONTROL-G)
+            CALL fgl_prtscr()
+        ON KEY (CONTROL-P)
+            CALL reverse_off_$TABNAME()
+            CALL ctrl_p_$TABNAME()
+            NEXT FIELD NEXT
+        ON KEY (CONTROL-W)
+            CALL help_$TABNAME()
+        ON KEY (INTERRUPT)
+            EXIT INPUT
+    END INPUT
+    OPTIONS HELP KEY CONTROL-W
+
+    IF int_flag THEN
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+        LET w_record.* = s_record.*
+        RETURN
+    END IF
+
+    WHENEVER ERROR CONTINUE
+
+    UPDATE $TABNAME SET $TABNAME.* = w_record.* WHERE CURRENT OF upd_curs
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+        LET w_record.* = s_record.*
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "    COMMIT WORK" >>$FGL
+else
+echo "    CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+        LET w_record.* = s_record.*
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    WHENEVER ERROR STOP
+
+    MESSAGE "This row has been changed"
+END FUNCTION
+
+
+{*******************************************************************************
+* This function will delete the current row.                                   *
+*******************************************************************************}
+
+FUNCTION del_$TABNAME()
+    DEFINE  cur_choice CHAR(3)
+
+    LET cur_choice = "No"
+    MENU "REMOVE"
+        COMMAND "No" "Does NOT remove this row from the active table." HELP 3
+            LET cur_choice = "No"
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "            ROLLBACK WORK" >>$FGL
+else
+echo "            CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+            IF sqlca.sqlcode THEN
+                CALL err_print(sqlca.sqlcode)
+            END IF
+            RETURN
+        COMMAND "Yes" "Removes this row from the active table." HELP 3
+            LET cur_choice = "Yes"
+            EXIT MENU
+        COMMAND KEY (CONTROL-G)
+            CALL fgl_prtscr()
+            NEXT OPTION cur_choice
+    END MENU
+
+    WHENEVER ERROR CONTINUE
+
+    DELETE FROM $TABNAME WHERE CURRENT OF upd_curs
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "        ROLLBACK WORK" >>$FGL
+else
+echo "        CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+!!
+if [ "$LFLG" = "-l" ]
+then
+echo "    COMMIT WORK" >>$FGL
+else
+echo "    CLOSE upd_curs" >>$FGL
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        ROLLBACK WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN
+    END IF
+
+    WHENEVER ERROR STOP
+
+    CALL shuffle_$TABNAME()              # I deleted this record
+
+    MESSAGE "Row deleted"
+END FUNCTION
+
+
+{*******************************************************************************
+* This function outputs the current list to the printer.
+*******************************************************************************}
+
+FUNCTION out_$TABNAME()
+    DEFINE  s_cur INTEGER
+    DEFINE  cur_choice CHAR(12)
+
+    LET cur_choice = "Current-List"
+    MENU "OUTPUT"
+        COMMAND "Current-List" "Writes the Current-List to the printer." HELP 4
+            LET cur_choice = "Current-List"
+            LET s_cur = q_cur
+            START REPORT rpt_${TABNAME} TO PRINTER
+            FOR q_cur = 1 TO q_cnt
+                IF repo_${TABNAME}("C", "S") THEN
+                    CALL disp_${TABNAME}()
+                    OUTPUT TO REPORT rpt_${TABNAME}(w_record.*)
+                END IF
+            END FOR
+            FINISH REPORT rpt_${TABNAME}
+            LET q_cur = s_cur
+            IF repo_${TABNAME}("C", "S") THEN
+                CALL disp_${TABNAME}()
+            END IF
+            EXIT MENU
+        COMMAND "One-Page" "Writes the Current-Row to the printer." HELP 4
+            LET cur_choice = "One-Page"
+            MESSAGE "Output record"
+            START REPORT rpt_${TABNAME} TO PRINTER
+            OUTPUT TO REPORT rpt_${TABNAME}(w_record.*)
+            FINISH REPORT rpt_${TABNAME}
+            EXIT MENU
+        COMMAND KEY (INTERRUPT)
+            EXIT MENU
+        COMMAND KEY (CONTROL-G)
+            CALL fgl_prtscr()
+            NEXT OPTION cur_choice
+    END MENU
+END FUNCTION
+
+
+{*******************************************************************************
+* This function executes a shell command.                                      *
+*******************************************************************************}
+
+FUNCTION bang()
+    DEFINE  cmd CHAR(80)
+    DEFINE  x CHAR(1)
+
+    MESSAGE ""
+
+    LET x = "!"
+    WHILE x = "!"
+        PROMPT "!" FOR cmd
+            ON KEY (CONTROL-G)
+                CALL fgl_prtscr()
+        END PROMPT
+        RUN cmd
+        PROMPT "Press return to continue" FOR CHAR x
+            ON KEY (CONTROL-G)
+                CALL fgl_prtscr()
+        END PROMPT
+    END WHILE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function gets the current, next, or previous row.                       *
+*******************************************************************************}
+
+FUNCTION repo_$TABNAME(direction, cursor_type)
+DEFINE  direction CHAR(1)
+DEFINE  cursor_type CHAR(1)
+
+    DEFINE  the_rowid INTEGER
+    DEFINE  q_jmp INTEGER
+
+    IF q_cnt = 0 THEN
+        ERROR " There are no rows in the current list  "
+        RETURN FALSE
+    ELSE
+        MESSAGE ""
+    END IF
+
+    LET q_jmp = q_off
+    IF q_jmp = 0 THEN
+        LET q_jmp = 1
+    END IF
+    LET q_off = "0"
+
+    CASE direction
+        WHEN "N"
+            LET q_cur = q_cur + q_jmp
+            IF  q_cur > q_cnt THEN
+                LET q_cur = q_cnt
+                ERROR " There are no more rows in the direction you are going  "
+            END IF
+        WHEN "P"
+            LET q_cur = q_cur - q_jmp
+            IF  q_cur < 1 THEN
+                LET q_cur = 1
+                ERROR " There are no more rows in the direction you are going  "
+            END IF
+        WHEN "F"
+            LET q_cur = 1
+        WHEN "L"
+            LET q_cur = q_cnt
+        WHEN "C"
+            #  Do Nothing !!!
+    END CASE
+
+    WHENEVER ERROR CONTINUE
+
+    LET the_rowid = r_rowid_s(q_cur)
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+    CASE
+        WHEN cursor_type = "U"
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+            BEGIN WORK
+            IF sqlca.sqlcode THEN
+                CALL err_print(sqlca.sqlcode)
+                WHENEVER ERROR STOP
+                RETURN FALSE
+            END IF
+!!
+fi
+cat <<!! >>$FGL
+            OPEN upd_curs USING the_rowid
+        WHEN cursor_type = "B"
+            OPEN brw_curs USING the_rowid
+        OTHERWISE
+            OPEN std_curs USING the_rowid
+    END CASE
+!!
+else
+cat <<!! >>$FGL
+    IF cursor_type = "U" THEN
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        BEGIN WORK
+        IF sqlca.sqlcode THEN
+            CALL err_print(sqlca.sqlcode)
+            WHENEVER ERROR STOP
+            RETURN FALSE
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        OPEN upd_curs USING the_rowid
+    ELSE
+        OPEN std_curs USING the_rowid
+    END IF
+!!
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        CALL err_print(sqlca.sqlcode)
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        IF cursor_type = "U" THEN
+            ROLLBACK WORK
+            IF sqlca.sqlcode THEN
+                CALL err_print(sqlca.sqlcode)
+            END IF
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN FALSE
+    END IF
+
+    WHENEVER ERROR CONTINUE
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+    CASE
+        WHEN cursor_type = "U"
+            FETCH upd_curs INTO w_record.*
+        WHEN cursor_type = "B"
+            FETCH brw_curs INTO w_record.$BROWSE1, w_record.$BROWSE2
+        OTHERWISE
+            FETCH std_curs INTO w_record.*
+    END CASE
+!!
+else
+cat <<!! >>$FGL
+    IF cursor_type = "U" THEN
+        FETCH upd_curs INTO w_record.*
+    ELSE
+        FETCH std_curs INTO w_record.*
+    END IF
+!!
+fi
+cat <<!! >>$FGL
+    IF sqlca.sqlcode THEN
+        IF sqlca.sqlcode = NOTFOUND THEN
+            ERROR " Someone else has deleted a row which is in your list  "
+            CALL shuffle_$TABNAME()              # Other deleted this record
+            IF cursor_type = "S" THEN
+                WHENEVER ERROR STOP
+                RETURN TRUE
+            END IF
+        ELSE
+            CALL err_print(sqlca.sqlcode)
+        END IF
+!!
+if [ "$LFLG" = "-l" ]
+then
+cat <<!! >>$FGL
+        IF cursor_type = "U" THEN
+            ROLLBACK WORK
+            IF sqlca.sqlcode THEN
+                CALL err_print(sqlca.sqlcode)
+            END IF
+        END IF
+!!
+fi
+cat <<!! >>$FGL
+        WHENEVER ERROR STOP
+        RETURN FALSE
+    END IF
+
+    WHENEVER ERROR STOP
+
+    RETURN TRUE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays data for the current row.                             *
+*******************************************************************************}
+
+FUNCTION disp_$TABNAME()
+    DISPLAY BY NAME
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "      w_record.$COLNAME," >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+      q_cur,
+      q_cnt
+END FUNCTION
+
+
+{*******************************************************************************
+* This function does the actual formating and printing.                        *
+*******************************************************************************}
+
+REPORT rpt_${TABNAME}(r_record)
+DEFINE  r_record RECORD LIKE $TABNAME.*
+
+    FORMAT EVERY ROW
+
+END REPORT
+
+
+{*******************************************************************************
+* This function brings in the most recent column value of the row.             *
+*******************************************************************************}
+
+FUNCTION ctrl_p_$TABNAME()
+    CASE
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        WHEN INFIELD($COLNAME)" >>$FGL
+        echo "            LET w_record.$COLNAME = s_record.$COLNAME" >>$FGL
+        echo "            DISPLAY BY NAME w_record.$COLNAME" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+    END CASE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays the contents of the working record in reverse video.  *
+*******************************************************************************}
+
+FUNCTION reverse_on_$TABNAME()
+    CASE
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        WHEN INFIELD($COLNAME)" >>$FGL
+        echo "            DISPLAY BY NAME w_record.$COLNAME ATTRIBUTE(REVERSE)" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+    END CASE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays the contents of the working record normally.          *
+*******************************************************************************}
+
+FUNCTION reverse_off_$TABNAME()
+    CASE
+!!
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        echo "        WHEN INFIELD($COLNAME)" >>$FGL
+        echo "            DISPLAY BY NAME w_record.$COLNAME" >>$FGL
+    fi
+done
+cat <<!! >>$FGL
+    END CASE
+END FUNCTION
+
+
+{*******************************************************************************
+* This function shuffles the rowid array down one element (after a delete).    *
+*******************************************************************************}
+
+FUNCTION shuffle_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    CALL m_rowid_s(q_cur, q_cnt)
+
+    LET q_cnt = q_cnt - 1
+    IF q_cur > q_cnt THEN
+        LET q_cur = q_cnt
+    END IF
+
+    IF q_cur = 0 THEN
+        LET w_record.* = n_record.*   # Faster than INITIALIZE
+    ELSE
+        LET retval = repo_$TABNAME("C", "S")
+    END IF
+END FUNCTION
+
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function moves the cursor in the browse window down one line.           *
+*******************************************************************************}
+
+FUNCTION brw_down_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    IF q_off = "0" THEN
+        IF q_cur + 1 > q_cnt THEN
+            ERROR " There are no more rows in the direction you are going  "
+            RETURN
+        ELSE
+            LET q_cur = q_cur + 1
+        END IF
+
+        CALL brw_dspline_$TABNAME("NORMAL")
+        IF brw_scrline + 1 > 10 THEN
+            SCROLL b_record.* UP
+        ELSE
+            LET brw_scrline = brw_scrline + 1
+        END IF
+        IF repo_$TABNAME("C", "B") THEN
+            CALL brw_dspline_$TABNAME("REVERSE")
+        END IF
+    ELSE
+        LET retval = repo_$TABNAME("N", "B")
+        CALL brw_dsppage_$TABNAME()
+    END IF
+END FUNCTION
+
+
+{*******************************************************************************
+* This function moves the cursor in the browse window up one line.             *
+*******************************************************************************}
+
+FUNCTION brw_up_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    IF q_off = "0" THEN
+        IF q_cur - 1 < 1 THEN
+            ERROR " There are no more rows in the direction you are going  "
+            RETURN
+        ELSE
+            LET q_cur = q_cur - 1
+        END IF
+
+        CALL brw_dspline_$TABNAME("NORMAL")
+        IF brw_scrline - 1 < 1 THEN
+            SCROLL b_record.* DOWN
+        ELSE
+            LET brw_scrline = brw_scrline - 1
+        END IF
+        IF repo_$TABNAME("C", "B") THEN
+            CALL brw_dspline_$TABNAME("REVERSE")
+        END IF
+    ELSE
+        LET retval = repo_$TABNAME("P", "B")
+        CALL brw_dsppage_$TABNAME()
+    END IF
+END FUNCTION
+
+
+{*******************************************************************************
+* This function moves the cursor in the browse window down one page.           *
+*******************************************************************************}
+
+FUNCTION brw_nextpage_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    IF q_off = "0" THEN
+        IF (q_cur - brw_scrline + 1) + 10 > q_cnt THEN
+            ERROR " There are no more rows in the direction you are going  "
+            RETURN
+        ELSE
+            LET q_cur = (q_cur - brw_scrline + 1) + 10
+        END IF
+    ELSE
+        WHENEVER ERROR CONTINUE
+        LET q_off = q_off * 10
+        WHENEVER ERROR STOP
+        LET retval = repo_$TABNAME("N", "B")
+    END IF
+
+    CALL brw_dsppage_$TABNAME()
+END FUNCTION
+
+
+{*******************************************************************************
+* This function moves the cursor in the browse window up one page.             *
+*******************************************************************************}
+
+FUNCTION brw_prevpage_$TABNAME()
+    DEFINE  retval SMALLINT
+
+    IF q_cur = 1 THEN
+        ERROR " There are no more rows in the direction you are going  "
+        RETURN
+    ELSE
+        IF q_off = "0" THEN
+            IF (q_cur - brw_scrline + 1) - 10 < 1 THEN
+                LET q_cur = 1
+            ELSE
+                LET q_cur = (q_cur - brw_scrline + 1) - 10
+            END IF
+        ELSE
+            WHENEVER ERROR CONTINUE
+            LET q_off = q_off * 10
+            WHENEVER ERROR STOP
+            LET retval = repo_$TABNAME("P", "B")
+        END IF
+    END IF
+
+    CALL brw_dsppage_$TABNAME()
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays a page of data in the browse window.                  *
+*******************************************************************************}
+
+FUNCTION brw_dsppage_$TABNAME()
+    FOR brw_scrline = 1 TO 10
+        IF q_cur <= q_cnt THEN
+            IF repo_$TABNAME("C", "B") THEN
+                CALL brw_dspline_$TABNAME("NORMAL")
+            END IF
+        ELSE
+            CALL brw_dspline_$TABNAME("")
+        END IF
+        LET q_cur = q_cur + 1
+    END FOR
+    LET q_cur = q_cur - 10
+    LET brw_scrline = 1
+    IF repo_$TABNAME("C", "B") THEN
+        CALL brw_dspline_$TABNAME("REVERSE")
+    END IF
+END FUNCTION
+
+
+{*******************************************************************************
+* This function displays a line of data in the browse window.                  *
+*******************************************************************************}
+
+FUNCTION brw_dspline_$TABNAME(style)
+DEFINE  style CHAR(7)
+
+    DEFINE  brw_offset SMALLINT
+
+    CASE
+        WHEN style IS NULL
+            DISPLAY "", ""
+              TO b_record[brw_scrline].$BROWSE1, b_record[brw_scrline].$BROWSE2
+        WHEN style = "NORMAL"
+            DISPLAY w_record.$BROWSE1, w_record.$BROWSE2
+              TO b_record[brw_scrline].$BROWSE1, b_record[brw_scrline].$BROWSE2
+        WHEN style = "REVERSE"
+            DISPLAY w_record.$BROWSE1, w_record.$BROWSE2
+              TO b_record[brw_scrline].$BROWSE1, b_record[brw_scrline].$BROWSE2
+                ATTRIBUTE(REVERSE)
+    END CASE
+
+    LET brw_offset = brw_scrline + 3
+    DISPLAY " " AT brw_offset,1
+END FUNCTION
+
+
+!!
+fi
+fi
+
+echo "*** Step 2:  Building default 'C' source(s) ..."
+if test -f "usr_funcs.c" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'usr_funcs.c'"
+else
+cat <<!! >usr_funcs.c
+/*
+**  usr_funcs.c - 'C' functions required by programs generated by db4glgen
+**  Copyright (C) 1989-2003  David A. Snyder
+**
+**  This library is free software; you can redistribute it and/or
+**  modify it under the terms of the GNU Library General Public
+**  License as published by the Free Software Foundation; version
+**  2 of the License.
+**
+**  This library is distributed in the hope that it will be useful,
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+**  Library General Public License for more details.
+**
+**  You should have received a copy of the GNU Library General Public
+**  License along with this library; if not, write to the Free
+**  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+*/
+
+#include <malloc.h>
+#include <stdio.h>
+#include <string.h>
+
+
+/******************************************************************************
+* This function prints whatever is on the screen (including windows).         *
+******************************************************************************/
+
+#define bool		char
+#define CHAR		short
+#define _ATTRIBUTE	(0x7f00)
+#define _CHARACTER	(0x00ff)
+#define _GRAPHMODE	(0x8000)
+
+typedef struct window {
+	short	_cury, _curx;
+	short	_maxy, _maxx;
+	short	_begy, _begx;
+	short	_flags;
+	bool	_clear;
+	bool	_leave;
+	bool	_scroll;
+	CHAR	**_y;
+	short	*_firstch;
+	short	*_lastch;
+	short	_attr;
+} WINDOW;
+
+typedef struct _efwindow {
+	struct _efwindow *upper, *lower;
+	int *win;
+	int *swin;
+	char *formname;
+	int *winfrm;
+	short rows, columns;
+	short promptline;
+	short msgline;
+	short formline;
+	short cmtline;
+	short flag;
+	short forecolor;
+	unsigned long ucount;
+} _EFwindow;
+
+
+extern _EFwindow	*topwin, *botwin, *_Wscreen;
+extern WINDOW		*_efbigwin;
+extern char	*GB;
+
+fgl_prtscr(arg)
+int	arg;
+{
+	register FILE		*fp;
+	register _EFwindow	*scr;
+	register WINDOW		*win;
+	register CHAR		**line, *data;
+	register int	y, x;
+	register char	c;
+	char	*getenv(), *dbprint;
+
+	if ((dbprint = getenv("DBPRINT")) == NULL)
+		dbprint = "lp -s";
+
+	if (topwin == _Wscreen)
+		/* the user is looking at the "screen" */
+
+		win = (WINDOW * ) _Wscreen->win;
+	else {
+		/* the user is looking at the one or more "windows" */
+
+		win = _efbigwin;
+
+		for (scr = botwin; scr != (_EFwindow * )0; 
+		    scr  = (_EFwindow * )scr->upper) {
+			overwrite((WINDOW * ) scr->win, win);
+		}
+	}
+
+	if ((fp = popen(dbprint, "w")) != (FILE * )0) {
+		for (y = 0, line = win->_y; y < win->_maxy; y++, line++) {
+			for (x = 0, data = *line; x < win->_maxx; x++, data++) {
+				c = (char) *data & _CHARACTER;
+
+				if ((*data & _GRAPHMODE) && *GB) {
+					if (c == GB[0])
+						c = '+';
+					else if (c == GB[1])
+						c = '+';
+					else if (c == GB[2])
+						c = '+';
+					else if (c == GB[3])
+						c = '+';
+					else if (c == GB[4])
+						c = '-';
+					else if (c == GB[5])
+						c = '|';
+				}
+				(void)fputc(c, fp);
+			}
+			(void)fputc('\n', fp);
+		}
+		(void)pclose(fp);
+	}
+	return 0;
+}
+
+
+/******************************************************************************
+* This function waits for a key on the keyboard to be hit and returns an      *
+* INTEGER code for that key.                                                  *
+******************************************************************************/
+
+extern short	eflastkey;
+
+fgl_getkey(arg)
+int	arg;
+{
+	extern short	_acckey;
+	short	keyhit;
+
+	eflastkey = ((keyhit = rgetkey()) == _acckey) ? 2016 : keyhit;
+	clrmsg();
+	retlong((long) eflastkey);
+	return(1);
+}
+
+
+/******************************************************************************
+* These four(4) functions handle the dynamic rowid array for all standard     *
+* 4GL screens.                                                                *
+******************************************************************************/
+
+static long	*ptr;
+
+i_rowid_s(arg)
+int	arg;
+{
+	if ((ptr = (long *)malloc(sizeof(long))) != NULL)
+		retint(0);
+	else
+		retint(1);
+	return(1);
+
+}
+
+
+m_rowid_s(arg)
+int	arg;
+{
+	int	i, q_cur, q_cnt;
+
+	popint(&q_cnt);
+	popint(&q_cur);
+
+	for (i = q_cur; i < q_cnt; i++)
+	    ptr[i] = ptr[i+1];
+
+	return(0);
+}
+
+
+r_rowid_s(arg)
+int	arg;
+{
+	int	pos;
+
+	popint(&pos);
+	retint(ptr[pos]);
+	return(1);
+}
+
+
+s_rowid_s(arg)
+int	arg;
+{
+	int	size;
+
+	popint(&size);
+	if ((ptr = (long *)realloc((char *)ptr, (unsigned)(size + 1) * sizeof(long))) != NULL)
+		retint(0);
+	else
+		retint(1);
+	return(1);
+}
+
+
+w_rowid_s(arg)
+int	arg;
+{
+	int	pos, value;
+
+	popint(&value);
+	popint(&pos);
+	ptr[pos] = value;
+	return(0);
+}
+
+
+!!
+fi
+
+if [ -s ${INFORMIXDIR}/bin/cfglgo ]
+then
+if test -f "fgiusr.c" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'fgiusr.c'"
+else
+cat <<!! >fgiusr.c
+/*
+**  fgiusr.c - function definitions required by programs generated by db4glgen
+**  Copyright (C) 1989-2003  David A. Snyder
+**
+**  This library is free software; you can redistribute it and/or
+**  modify it under the terms of the GNU Library General Public
+**  License as published by the Free Software Foundation; version
+**  2 of the License.
+**
+**  This library is distributed in the hope that it will be useful,
+**  but WITHOUT ANY WARRANTY; without even the implied warranty of
+**  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+**  Library General Public License for more details.
+**
+**  You should have received a copy of the GNU Library General Public
+**  License along with this library; if not, write to the Free
+**  Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+*/
+
+#include "fgicfunc.h"
+
+int	fgl_prtscr();
+int	fgl_getkey();
+int	i_rowid_s();
+int	m_rowid_s();
+int	r_rowid_s();
+int	s_rowid_s();
+int	w_rowid_s();
+
+cfunc_t usrcfuncs[] = 
+{
+	"fgl_prtscr", fgl_prtscr, 0,
+	"fgl_getkey", fgl_getkey, 0,
+	"i_rowid_s", i_rowid_s, 0,
+	"m_rowid_s", m_rowid_s, 2,
+	"r_rowid_s", r_rowid_s, 1,
+	"s_rowid_s", s_rowid_s, 1,
+	"w_rowid_s", w_rowid_s, 2,
+	0, 0, 0
+};
+
+
+!!
+fi
+fi
+
+echo "*** Step 3:  Building default help ..."
+if test -n "$HLPEXISTS" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'$HLP'"
+else
+cat <<!! >$HLP
+.1
+OPTIONS.
+
+The OPTIONS Menu presents you with the following options:
+
+ > Query            Searches the table
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$HLP
+ > Browse           Browse through rows in Current List
+!!
+fi
+cat <<!! >>$HLP
+ > Next             Displays the next row in the Current List
+ > Previous         Displays the previous row in the Current List
+ > First            Displays the first row in the Current List
+ > Last             Displays the last row in the Current List
+ > Add              Adds data to the active table
+ > Update           Changes a row in the active table
+ > Remove           Deletes a row from the active table
+ > Current          Displays the current row of the active table
+ > Output           Sends a report to an output destination
+ > Exit             Returns to the Main Menu
+
+PROCEDURE:
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$HLP
+Enter the first letter of the menu option you want:  q for Query, b for Browse,
+n for Next, p for Previous, f for First, l for Last, a for Add, u for Update, r
+for Remove, c for Current, o for Output, or e for Exit.
+!!
+else
+cat <<!! >>$HLP
+Enter the first letter of the menu option you want:  q for Query, n for Next, p
+for Previous, f for First, l for Last, a for Add, u for Update, r for Remove, c
+for Current, o for Output, or e for Exit.
+!!
+fi
+cat <<!! >>$HLP
+
+Use the Next and Previous options to view the next or previous row in the
+Current List.  First use the Query option to generate a Current List (a list of
+all the rows that satisfy your query).  If there is more than one row in the
+Current List, you can select the Next option to look at the next row.  After
+you use Next, you can use the Previous option to look at the previous row.
+
+Use the Exit option to leave the OPTIONS Menu and return to the Main Menu.
+After you select the Exit option, Options displays the Main Menu.
+
+
+QUIT:
+
+Select the Exit option to leave the OPTIONS Menu and return to the MAIN Menu.
+
+
+NOTES:
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>$HLP
+You cannot select Browse, Update, Next, Previous, First, Last, Remove, Current,
+or Output until you have generated a Current List with Query.
+!!
+else
+cat <<!! >>$HLP
+You cannot select Update, Next, Previous, First, Last, Remove, Current, or
+Output until you have generated a Current List with Query.
+!!
+fi
+cat <<!! >>$HLP
+.2
+FIELD EDITING CONTROL KEYS:
+CTRL X    : Deletes a character
+CTRL A    : Toggles in and out of character insertion mode
+CTRL D    : Clears to the end of the field
+left      : Backspace
+right     : Forward Space
+up        : Traverse backwards through the fields
+CTRL F    : 'Fast-forward' through the fields
+CTRL B    : 'Fast-reverse' through the fields
+CTRL G    : Prints the current screen (including windows)
+CTRL P    : Brings in most recent column value of the row
+CTRL W    : Display help message
+CR        : Next field
+CTRL I    : Next field
+down      : Next field
+ESCAPE    : Entry Complete
+INTERRUPT : Abort Command
+
+
+
+QUERY COMPARISON SYMBOLS:
+<     Less than                 <=    Less than or equal
+>     Greater than              >=    Greater than or equal
+=     Equal                     <>    Not equal
+>>    Last value (only for indexed columns, without other comparisons)
+<<    First value (same conditions as last value)
+:     Range (inclusive)
+|     OR condition
+The colon for range comparison is typed between the desired range values
+The pipe symbol for OR separates the different possibilities
+         All other symbols are typed in front of the column value
+An asterisk (*) is used for wild card comparison of character columns
+A blank field means don't care
+         To match for a blank character field, use the equality symbol
+.3
+REMOVE.
+
+The REMOVE Menu presents you with the following options:
+
+ > No               Does NOT remove this row from the active table
+ > Yes              Removes this row from the active table
+
+
+PROCEDURE:
+
+Enter the first letter of the menu option you want:  n for No, y for Yes.
+.4
+OUTPUT.
+
+The OUTPUT Menu presents you with the following options:
+
+ > Current-List     Writes the Current-List to the printer
+ > One-Page         Writes the Current-Row to the printer
+
+
+PROCEDURE:
+
+Enter the first letter of the menu option you want:  c for Current-List,
+o for One-Page.
+!!
+fi
+
+if test -z "$FGLEXISTS" -o "${FFLG}" = "-f"
+then
+cat <<!! >>$FGL
+{*******************************************************************************
+* This function displays help for individual fields.                           *
+*******************************************************************************}
+
+FUNCTION help_$TABNAME()
+    CASE
+!!
+fi
+cat $TMP |
+while read COLNAME rest_of_line
+do
+    if [ _$COLNAME != _ ]
+    then
+        NUM=`expr $NUM + 1`
+        if test -z "$HLPEXISTS" -o "${FFLG}" = "-f"
+        then
+            echo ".$NUM" >> $HLP
+            echo "This is the default help for $TABNAME.$COLNAME" >> $HLP
+            echo >> $HLP
+        fi
+        if test -z "$FGLEXISTS" -o "${FFLG}" = "-f"
+        then
+            echo "        WHEN INFIELD($COLNAME)" >> $FGL
+            echo "            CALL SHOWHELP($NUM)" >> $FGL
+        fi
+    fi
+done
+if test -z "$FGLEXISTS" -o "${FFLG}" = "-f"
+then
+cat <<!! >>$FGL
+    END CASE
+END FUNCTION
+
+
+!!
+fi
+
+echo "*** Step 4:  Checking for a SERIAL field in $TABNAME ..."
+dbaccess $DBNAME - <<! >/dev/null 2>&1
+output to "$TMP" without headings
+select  colname
+from    syscolumns, systables
+where   syscolumns.tabid = systables.tabid
+and     systables.tabname = "$TABNAME"
+and     (syscolumns.coltype = 262 or syscolumns.coltype = 6)
+!
+echo > $SER
+cat $TMP |
+while read COLNAME COLTYPE rest_of_line
+do
+        if [ _$COLNAME != _ ]
+        then
+                echo $COLNAME > $SER
+        fi
+done
+
+# if table doesn't have serial field, remove any references from source file
+if test -z "$FGLEXISTS" -o "${FFLG}" = "-f"
+then
+SERNAME=`cat $SER`
+if [ _$SERNAME = _ ]
+then
+ed - $FGL <<! >/dev/null 2>&1
+g/Qsername/d
+w
+q
+!
+else
+ed - $FGL <<! >/dev/null 2>&1
+g/Qsername/s//$SERNAME/
+w
+q
+!
+fi
+fi
+
+echo "*** Step 5:  Building default form(s) ..."
+if test -f "$PER" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'$PER'"
+else
+form4gl -d $PRGNAME $DBNAME $TABNAME >/dev/null 2>&1
+ed - $PER <<! >/dev/null 2>&1
+3a
+
+--ROW-[x000  ]-OF-[x001  ]---------------------- Press CTRL-W for Help --------
+
+.
+$
+i
+x000 = formonly.q_cur, noentry, reverse;
+x001 = formonly.q_cnt, noentry, reverse;
+.
+w
+q
+!
+rm -f $FRM
+fi
+
+if test -n "$BRWNAME"
+then
+if test -f "$BPER" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'$BPER'"
+else
+cat <<!! >$BPER
+database $DBNAME
+screen
+{
+ $BROWSE1    $BROWSE2
+ ----------  --------------------
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+[f000      ][f001                ]
+}
+end
+tables
+$TABNAME
+attributes
+f000 = $TABNAME.$BROWSE1;
+f001 = $TABNAME.$BROWSE2;
+end
+instructions
+delimiters "  "
+screen record b_record[10] ($BROWSE1, $BROWSE2)
+end
+!!
+fi
+fi
+
+echo "*** Step 6:  Building default makefile(s) ..."
+if test -f "Makefile-4ge" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'Makefile-4ge'"
+else
+cat <<!! >Makefile-4ge
+# Makefile for executable $PRGNAME ($FGE)
+
+CFLAGS=-c -O
+LDFLAGS=-s
+
+
+################################################################################
+# Dependencies for creating the complete working screen.                       #
+################################################################################
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4ge
+all: $FGE $FRM $BFRM $MSG
+!!
+else
+cat <<!! >>Makefile-4ge
+all: $FGE $FRM $MSG
+!!
+fi
+cat <<!! >>Makefile-4ge
+
+
+################################################################################
+# Dependencies for creating individual executable, form, and help files.       #
+################################################################################
+
+$FGE: $O usr_funcs.o
+	c4gl $O usr_funcs.o \$(LDFLAGS) -o $FGE
+
+$FRM: $PER
+	form4gl -s $PER
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4ge
+$BFRM: $BPER
+	form4gl -s $BPER
+
+!!
+fi
+cat <<!! >>Makefile-4ge
+$MSG: $HLP
+	mkmessage $HLP $MSG
+
+
+################################################################################
+# Dependencies for creating executable's modules.                              #
+################################################################################
+
+$O: $FGL
+	c4gl \$(CFLAGS) $FGL
+	@rm -f $C $EC
+
+
+################################################################################
+# Dependency for cleaning up when all done.                                    #
+################################################################################
+
+clean:
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4ge
+	rm -f $FGE $O $C $EC $FRM $BFRM $MSG usr_funcs.o
+!!
+else
+cat <<!! >>Makefile-4ge
+	rm -f $FGE $O $C $EC $FRM $MSG usr_funcs.o
+!!
+fi
+fi
+
+if [ -s ${INFORMIXDIR}/bin/cfglgo ]
+then
+if test -f "Makefile-4gi" -a "${FFLG}" != "-f"
+then
+        echo db4glgen: will not over-write existing file "'Makefile-4gi'"
+else
+cat <<!! >Makefile-4gi
+# Makefile for rapid $PRGNAME ($FGI)
+
+CFLAGS=-O -I\$(INFORMIXDIR)/incl
+
+
+################################################################################
+# Dependencies for creating the complete working screen.                       #
+################################################################################
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4gi
+all: $FGI $FRM $BFRM $MSG newfglgo
+!!
+else
+cat <<!! >>Makefile-4gi
+all: $FGI $FRM $MSG newfglgo
+!!
+fi
+cat <<!! >>Makefile-4gi
+
+
+################################################################################
+# Dependencies for creating individual rapid, form, and help files.            #
+################################################################################
+
+$FGI: $FGO
+	cat $FGO > $FGI
+
+$FRM: $PER
+	form4gl -s $PER
+
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4gi
+$BFRM: $BPER
+	form4gl -s $BPER
+
+!!
+fi
+cat <<!! >>Makefile-4gi
+$MSG: $HLP
+	mkmessage $HLP $MSG
+
+
+################################################################################
+# Dependencies for creating rapids's modules and the new runner.               #
+################################################################################
+
+$FGO: $FGL
+	fglpc $FGL
+
+newfglgo: fgiusr.o usr_funcs.o
+	cfglgo fgiusr.o usr_funcs.o -o newfglgo -s
+
+newfgldb: fgiusr.o usr_funcs.o
+	cfgldb fgiusr.o usr_funcs.o -o newfgldb -s
+
+
+################################################################################
+# Dependency for cleaning up when all done.                                    #
+################################################################################
+
+clean:
+!!
+if test -n "$BRWNAME"
+then
+cat <<!! >>Makefile-4gi
+	rm -f $FGI $FGO $FRM $BFRM $MSG fgiusr.o usr_funcs.o newfglgo newfgldb
+!!
+else
+cat <<!! >>Makefile-4gi
+	rm -f $FGI $FGO $FRM $MSG fgiusr.o usr_funcs.o newfglgo newfgldb
+!!
+fi
+fi
+    ln -s Makefile-4gi Makefile
+else
+    ln -s Makefile-4ge Makefile
+fi
+
+rm -f $TMP $SER
+exit 0

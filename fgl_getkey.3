@@ -1,0 +1,21 @@
+.TH FGL_GETKEY 3
+.SH NAME
+fgl_getkey \- return the key code of the last key touched
+.SH SYNOPSIS
+.B int fgl_getkey()
+.SH DESCRIPTION
+.I fgl_getkey
+will wait for the user to touch a key and then return the INTEGER code
+of the key just touched.
+.I fgl_getkey
+differs from
+.I fgl_lastkey
+in that it can be used anytime, anywhere... not just in a CONSTRUCT,
+INPUT, INPUT ARRAY, or PROMPT statement.
+.I fgl_getkey
+is fully compatible with
+.I fgl_lastkey
+and
+.I fgl_keyval.
+.SH SUPPORT
+Send bug reports to Dave Snyder <dave@snide.com>

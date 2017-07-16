@@ -1,0 +1,36 @@
+D 4.03 06/12/2003 10:24:28 dave 11 10
+Changed "isql" to "dbaccess"... dbaccess comes with the engine, isql is extra
+Checking for SERIAL now works with ALL versions of dbaccess
+D 4.02 04/03/2003 10:29:36 dave 10 9
+Blanked out the q_cur and q_cnt fields during an add
+D 4.01 03/03/03 10:56:57 dave 9 8
+Added an additional WHENEVER ERROR CONTINUE to the repo()
+D 4.00 95/05/16 09:04:17 dave 8 7
+Added "First" & "Last" commands to the menu and help file
+Changed the order of REMOVE's Yes/No to No/Yes in the help file
+Display "q_cur" of "q_cnt" on screen
+Major rewrite of the "repo" function allowing true row count tracking
+New function: m_rowid_s()  RTFM!
+New function: shuffle_$TABNAME() used by "repo" and "delete" functions
+Added additional WHENEVER ERROR STOP statements in strategic places
+Cleaned up the "usage" error message
+Now doing a check (boolean) on i_rowid_s()
+D 3.23 95/04/04 07:49:29 dave 7 6
+Create a "sym" link from Makefile-4g[ie] -> Makefile based on what's installed
+Still more bug fixes in the "repo" function
+D 3.22 95/03/13 11:08:51 dave 6 5
+Added "-o" option so special Online code can be generated
+Generate SET ISOLATION TO DIRTY READ in the "init" function if -l & -o are used
+D 3.21 94/07/16 18:52:44 dave 5 4
+Removed the ON KEY (INTERRUPT) from the CONSTRUCT clause
+D 3.20 94/07/11 16:20:33 dave 4 3
+Changed q_cnt increment logic in Query and Add
+D 3.19 94/06/28 06:57:10 dave 3 2
+More bug fixes in the "repo" function
+Check of s_rowid_s() is now boolean
+D 3.18 94/05/12 16:30:28 dave 2 1
+Bug fixes in the "repo" function
+Changes to the "menu" function for better COMMAND consistency
+Performance fixes (nothing major, but still there) when calling "repo"
+D 3.17 93/12/24 12:30:31 dave 1 0
+Initial version (well, at least as far as SCCS is concerned)
